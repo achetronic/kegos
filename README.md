@@ -62,7 +62,9 @@ They are described in the following table:
 
 ## Examples
 
-Here you have a complete example to use this command:
+### Using Command-line Flags
+
+Here you have a complete example to use this command with flags:
 
 ```console
 kegos \
@@ -75,6 +77,22 @@ kegos \
  --keycloak-client-secret="your-client-secret" \
  --reconcile-interval="15m" \
  --synced-parent-group="google-workspace"
+```
+
+### Using Environment Variables
+
+You can also mix both approaches, with environment variables:
+
+```console
+export GSUITE_CREDENTIALS="/opt/kegos/gsuite-credentials.json"
+export GSUITE_DOMAIN="freepik.com"
+export KEYCLOAK_URI="https://keycloak.freepik.com"
+export KEYCLOAK_REALM="employees"
+export KEYCLOAK_CLIENT_ID="kegos-sync"
+export KEYCLOAK_CLIENT_SECRET="your-client-secret"
+export SYNCED_PARENT_GROUP="google-workspace"
+
+kegos --log-level=info --reconcile-interval="15m"
 ```
 
 ## How to use
