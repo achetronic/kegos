@@ -54,19 +54,12 @@ type Runner struct {
 	gsuiteDomain              string
 
 	//
-	keycloakURI          string
-	keycloakRealm        string
-	keycloakClientID     string
-	keycloakClientSecret string
-
-	//
 	reconcileLoopDuration time.Duration
 	syncedParentGroup     string
 
 	//
-	gsuiteCli     *gsuite.Admin
-	keycloakCli   *gocloak.GoCloak
-	keycloakToken *gocloak.JWT
+	gsuiteCli *gsuite.Admin
+	keycloak  *keycloak.Keycloak
 }
 
 func NewRunner(opts RunnerOptions) (*Runner, error) {
@@ -75,12 +68,9 @@ func NewRunner(opts RunnerOptions) (*Runner, error) {
 		appCtx:                    opts.AppCtx,
 		gsuiteJsonCredentialsPath: opts.GsuiteJsonCredentialsPath,
 		gsuiteDomain:              opts.GsuiteDomain,
-		keycloakURI:               opts.KeycloakURI,
-		keycloakRealm:             opts.KeycloakRealm,
-		keycloakClientID:          opts.KeycloakClientID,
-		keycloakClientSecret:      opts.KeycloakClientSecret,
-		reconcileLoopDuration:     opts.ReconcileLoopDuration,
-		syncedParentGroup:         opts.SyncedParentGroup,
+
+		reconcileLoopDuration: opts.ReconcileLoopDuration,
+		syncedParentGroup:     opts.SyncedParentGroup,
 	}
 
 	gsuiteCli, err := gsuite.NewAdmin(context.Background(), runner.gsuiteJsonCredentialsPath)
@@ -89,17 +79,21 @@ func NewRunner(opts RunnerOptions) (*Runner, error) {
 
 	}
 
-	kcClient := gocloak.NewClient(runner.keycloakURI)
+	keycloakObj, err := keycloak.NewKeycloak(keycloak.KeycloakOptions{
+		AppCtx: opts.AppCtx,
 
-	// A Keycloak client with Service Account flow enabled with enough permissions is needed
-	kcToken, err := kcClient.LoginClient(runner.appCtx.Context, runner.keycloakClientID, runner.keycloakClientSecret, runner.keycloakRealm)
+		URI:          opts.KeycloakURI,
+		Realm:        opts.KeycloakRealm,
+		ClientID:     opts.KeycloakClientID,
+		ClientSecret: opts.KeycloakClientSecret,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed signing in in Keycloak: %v", err)
+		return nil, fmt.Errorf("failed creating keycloak client: %v", err)
+
 	}
 
 	runner.gsuiteCli = &gsuiteCli
-	runner.keycloakCli = kcClient
-	runner.keycloakToken = kcToken
+	runner.keycloak = keycloakObj
 
 	return runner, nil
 }
@@ -107,15 +101,16 @@ func NewRunner(opts RunnerOptions) (*Runner, error) {
 // getKeycloakChildrenGroups TODO
 func (r *Runner) getKeycloakChildrenGroups() (parentGroup *string, childrenGroups map[string]*gocloak.Group, err error) {
 
-	// 1. Retrieve Keycloak groups
-	kcExistingGroups, err := r.keycloakCli.GetGroups(r.appCtx.Context, r.keycloakToken.AccessToken, r.keycloakRealm, gocloak.GetGroupsParams{
-		Full:   gocloak.BoolP(true),
-		Exact:  gocloak.BoolP(true),
-		Max:    gocloak.IntP(1),
-		Search: gocloak.StringP(r.syncedParentGroup),
-	})
+	// 1. Try retrieving Keycloak parent group
+	kcExistingGroups, err := r.keycloak.GetGocloakClient().GetGroups(
+		r.appCtx.Context, r.keycloak.GetToken().AccessToken, r.keycloak.Realm, gocloak.GetGroupsParams{
+			Full:   gocloak.BoolP(true),
+			Exact:  gocloak.BoolP(true),
+			Max:    gocloak.IntP(1),
+			Search: gocloak.StringP(r.syncedParentGroup),
+		})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed getting groups: %v", err)
+		return nil, nil, fmt.Errorf("failed getting parent group: %v", err)
 	}
 
 	// 2. Retrieve children groups for the found parent.
@@ -126,7 +121,9 @@ func (r *Runner) getKeycloakChildrenGroups() (parentGroup *string, childrenGroup
 	if len(kcExistingGroups) == 0 {
 		kcParentGroup.Name = gocloak.StringP(r.syncedParentGroup)
 
-		gCreationResult, err := r.keycloakCli.CreateGroup(r.appCtx.Context, r.keycloakToken.AccessToken, r.keycloakRealm, kcParentGroup)
+		gCreationResult, err := r.keycloak.GetGocloakClient().CreateGroup(r.appCtx.Context,
+			r.keycloak.GetToken().AccessToken, r.keycloak.Realm, kcParentGroup)
+
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed creating parent group: %v", err)
 		}
@@ -136,8 +133,7 @@ func (r *Runner) getKeycloakChildrenGroups() (parentGroup *string, childrenGroup
 		kcParentGroup = *kcExistingGroups[0]
 	}
 
-	kcChildrenGroups, err = keycloak.GetChildrenGroups(r.appCtx.Context, r.keycloakURI,
-		r.keycloakRealm, *kcParentGroup.ID, r.keycloakToken.AccessToken)
+	kcChildrenGroups, err = r.keycloak.GetChildrenGroups(r.keycloak.GetToken().AccessToken, *kcParentGroup.ID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed getting children groups: %v", err)
 	}
@@ -156,12 +152,12 @@ type KeycloakUserGroups struct {
 	Groups map[string]*gocloak.Group
 }
 
-// getKeycloakUsersGroups TODO
+// getKeycloakUsersGroups return a map of username->{user, groups}
 func (r *Runner) getKeycloakUsersGroups() (usersGroups map[string]KeycloakUserGroups, err error) {
 
 	kcUsersGroups := map[string]KeycloakUserGroups{}
 
-	kcUsers, err := r.keycloakCli.GetUsers(r.appCtx.Context, r.keycloakToken.AccessToken, r.keycloakRealm, gocloak.GetUsersParams{})
+	kcUsers, err := r.keycloak.GetUsers(r.keycloak.GetToken().AccessToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed getting users: %v", err)
 	}
@@ -169,7 +165,7 @@ func (r *Runner) getKeycloakUsersGroups() (usersGroups map[string]KeycloakUserGr
 	// Create a map to merge a user and its groups into a unique object.
 	for _, user := range kcUsers {
 
-		kcUserGroups, err := r.keycloakCli.GetUserGroups(r.appCtx.Context, r.keycloakToken.AccessToken, r.keycloakRealm, *user.ID, gocloak.GetGroupsParams{})
+		kcUserGroups, err := r.keycloak.GetUserGroups(*user.ID, r.keycloak.GetToken().AccessToken)
 		if err != nil {
 			r.appCtx.Logger.Error("failed getting user groups. Ignoring user...", "user", *user.Email, "error", err)
 			continue
@@ -223,7 +219,7 @@ func (r *Runner) reconcileUserGroups() {
 		for _, kcUserGroup := range kcUserGroups.Groups {
 
 			// Ignore not auto-managed groups
-			if !strings.HasPrefix(*kcUserGroup.Path, "/"+r.syncedParentGroup) {
+			if !strings.HasPrefix(*kcUserGroup.Path, "/"+r.syncedParentGroup+"/") {
 				continue
 			}
 
@@ -232,8 +228,8 @@ func (r *Runner) reconcileUserGroups() {
 
 				r.appCtx.Logger.Debug("deleting user from group", "user", kcUsername, "group", *kcUserGroup.Name)
 
-				delUserGroupErr := r.keycloakCli.DeleteUserFromGroup(r.appCtx.Context, r.keycloakToken.AccessToken,
-					r.keycloakRealm, *kcUserGroups.User.ID, *kcChildrenGroups[*kcUserGroup.Name].ID)
+				delUserGroupErr := r.keycloak.GetGocloakClient().DeleteUserFromGroup(r.appCtx.Context, r.keycloak.GetToken().AccessToken,
+					r.keycloak.Realm, *kcUserGroups.User.ID, *kcChildrenGroups[*kcUserGroup.Name].ID)
 
 				if delUserGroupErr != nil {
 					r.appCtx.Logger.Error("failed deleting user from group", "user", kcUsername,
@@ -262,8 +258,8 @@ func (r *Runner) reconcileUserGroups() {
 			if !groupFoundInGlobalMap {
 				r.appCtx.Logger.Debug("creating missing group in Keycloak", "group", *tmpGroup.Name)
 
-				childGroupID, err := r.keycloakCli.CreateChildGroup(r.appCtx.Context, r.keycloakToken.AccessToken, r.keycloakRealm,
-					*kcParentGroupID, *tmpGroup)
+				childGroupID, err := r.keycloak.GetGocloakClient().CreateChildGroup(r.appCtx.Context,
+					r.keycloak.GetToken().AccessToken, r.keycloak.Realm, *kcParentGroupID, *tmpGroup)
 
 				if err != nil {
 					r.appCtx.Logger.Error("failed creating group in Keycloak", "group", *tmpGroup.Name, "error", err.Error())
@@ -278,8 +274,8 @@ func (r *Runner) reconcileUserGroups() {
 			}
 
 			r.appCtx.Logger.Debug("adding user to group", "user", kcUsername, "group", *tmpGroup.Name)
-			addUserGroupErr := r.keycloakCli.AddUserToGroup(r.appCtx.Context, r.keycloakToken.AccessToken, r.keycloakRealm,
-				*kcUserGroups.User.ID, *kcChildrenGroups[*tmpGroup.Name].ID)
+			addUserGroupErr := r.keycloak.GetGocloakClient().AddUserToGroup(r.appCtx.Context, r.keycloak.GetToken().AccessToken,
+				r.keycloak.Realm, *kcUserGroups.User.ID, *kcChildrenGroups[*tmpGroup.Name].ID)
 
 			if addUserGroupErr != nil {
 				r.appCtx.Logger.Error("failed adding user to the group",
@@ -292,8 +288,17 @@ func (r *Runner) reconcileUserGroups() {
 
 func (r *Runner) PleaseDoYourStuffForever() {
 	for {
+		// Renew Keycloak JWT
+		err := r.keycloak.RenewToken()
+		if err != nil {
+			r.appCtx.Logger.Info("failed renewing Keycloak token", "error", err.Error())
+			goto takeANap
+		}
+
+		//
 		r.reconcileUserGroups()
 
+	takeANap:
 		r.appCtx.Logger.Info(fmt.Sprintf("reconcile group finished. waiting for the next loop in %s", r.reconcileLoopDuration.String()))
 		time.Sleep(r.reconcileLoopDuration)
 	}
