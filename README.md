@@ -29,19 +29,19 @@ The set of users to sync is whatever exists in the Keycloak realm: if a user man
 Every configuration parameter can be defined by flags that can be passed to the CLI.
 They are described in the following table:
 
-| Name                       | Description                                               | Default | Example                                            |
-| :------------------------- | :-------------------------------------------------------- | :------ | -------------------------------------------------- |
-| `--log-level`              | Define the verbosity of the logs                          | `info`  | `--log-level debug`                                |
-| `--gsuite-credentials`     | Path to Google Workspace service account credentials JSON | -       | `--gsuite-credentials="/path/to/credentials.json"` |
+| Name                       | Description                                                               | Default | Example                                            |
+| :------------------------- | :------------------------------------------------------------------------ | :------ | -------------------------------------------------- |
+| `--log-level`              | Define the verbosity of the logs                                          | `info`  | `--log-level debug`                                |
+| `--gsuite-credentials`     | Path to Google Workspace service account credentials JSON                 | -       | `--gsuite-credentials="/path/to/credentials.json"` |
 | `--resolve-aliases`        | Resolve each Keycloak username to its Google primary email before syncing | `false` | `--resolve-aliases`                                |
 | `--user-rate-limit`        | Max users processed per minute against the Google API (0 disables it)     | `60`    | `--user-rate-limit=120`                            |
-| `--keycloak-uri`           | Keycloak server URI                                       | -       | `--keycloak-uri="https://auth.company.com"`        |
-| `--keycloak-realm`         | Keycloak realm to sync users and groups                   | -       | `--keycloak-realm="master"`                        |
-| `--keycloak-client-id`     | Keycloak client ID with admin permissions                 | -       | `--keycloak-client-id="kegos"`                     |
-| `--keycloak-client-secret` | Keycloak client secret                                    | -       | `--keycloak-client-secret="super-secret"`          |
-| `--reconcile-interval`     | Time between synchronization cycles (duration format)     | `10m`   | `--reconcile-interval="5m"`                        |
-| `--synced-parent-group`    | Keycloak group where to sync Gsuite groups                | -       | `--synced-parent-group="google-workspace"`         |
-| `--help`                   | Show help information                                     | `false` | `--help`                                           |
+| `--keycloak-uri`           | Keycloak server URI                                                       | -       | `--keycloak-uri="https://auth.company.com"`        |
+| `--keycloak-realm`         | Keycloak realm to sync users and groups                                   | -       | `--keycloak-realm="master"`                        |
+| `--keycloak-client-id`     | Keycloak client ID with admin permissions                                 | -       | `--keycloak-client-id="kegos"`                     |
+| `--keycloak-client-secret` | Keycloak client secret                                                    | -       | `--keycloak-client-secret="super-secret"`          |
+| `--reconcile-interval`     | Time between synchronization cycles (duration format)                     | `10m`   | `--reconcile-interval="5m"`                        |
+| `--synced-parent-group`    | Keycloak group where to sync Gsuite groups                                | -       | `--synced-parent-group="google-workspace"`         |
+| `--help`                   | Show help information                                                     | `false` | `--help`                                           |
 
 ## Prerequisites
 
