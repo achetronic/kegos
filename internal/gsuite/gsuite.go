@@ -116,6 +116,15 @@ func (a *Admin) GetGroupsFromUser(domain string, user string) (groups []string, 
 	return groups, err
 }
 
+// GetUserPrimaryEmail resolves any user key (primary email or alias) to the account's primary email.
+func (a *Admin) GetUserPrimaryEmail(userKey string) (primaryEmail string, err error) {
+	user, err := a.service.Users.Get(userKey).Do()
+	if err != nil {
+		return "", err
+	}
+	return user.PrimaryEmail, nil
+}
+
 // GetUsersFromGroup me das un grupo y te devuelvo sus miembros
 func (a *Admin) GetUsersFromGroup(group string) (memberList []string, err error) {
 

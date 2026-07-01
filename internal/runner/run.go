@@ -17,11 +17,18 @@ import (
 	"kegos/internal/keycloak"
 )
 
+// gsuiteClient is the subset of the Gsuite admin API the runner depends on.
+type gsuiteClient interface {
+	GetGroupsFromUser(domain string, user string) (groups []string, err error)
+	GetUserPrimaryEmail(userKey string) (primaryEmail string, err error)
+}
+
 type RunnerOptions struct {
 	AppCtx *globals.ApplicationContext
 
 	GsuiteJsonCredentialsPath string
-	GsuiteDomain              string
+	ResolveAliases            bool
+	UserRateLimit             int
 
 	KeycloakURI          string
 	KeycloakRealm        string
@@ -37,14 +44,15 @@ type Runner struct {
 
 	//
 	gsuiteJsonCredentialsPath string
-	gsuiteDomain              string
+	resolveAliases            bool
+	userDelay                 time.Duration
 
 	//
 	reconcileLoopDuration time.Duration
 	syncedParentGroup     string
 
 	//
-	gsuiteCli *gsuite.Admin
+	gsuiteCli gsuiteClient
 	keycloak  *keycloak.Keycloak
 }
 
@@ -53,7 +61,8 @@ func NewRunner(opts RunnerOptions) (*Runner, error) {
 	runner := &Runner{
 		appCtx:                    opts.AppCtx,
 		gsuiteJsonCredentialsPath: opts.GsuiteJsonCredentialsPath,
-		gsuiteDomain:              opts.GsuiteDomain,
+		resolveAliases:            opts.ResolveAliases,
+		userDelay:                 userDelayFromRate(opts.UserRateLimit),
 
 		reconcileLoopDuration: opts.ReconcileLoopDuration,
 		syncedParentGroup:     opts.SyncedParentGroup,
@@ -171,6 +180,50 @@ func (r *Runner) getKeycloakUsersGroups() (usersGroups map[string]KeycloakUserGr
 	return kcUsersGroups, nil
 }
 
+// userDelayFromRate converts a users-per-minute rate into the pause between users.
+// A rate of zero or below disables throttling.
+func userDelayFromRate(usersPerMinute int) time.Duration {
+	if usersPerMinute <= 0 {
+		return 0
+	}
+	return time.Minute / time.Duration(usersPerMinute)
+}
+
+// domainFromEmail extracts the domain part of an email address.
+func domainFromEmail(email string) (string, error) {
+	at := strings.LastIndex(email, "@")
+	if at <= 0 || at == len(email)-1 {
+		return "", fmt.Errorf("invalid email address: %q", email)
+	}
+	return email[at+1:], nil
+}
+
+// getGsuiteGroupsForUser returns the user's Gsuite groups filtered to the user's own domain.
+// When resolveAliases is set, the Keycloak username is resolved to its Google primary email
+// first, so a user logged in through a domain alias still matches its real domain.
+func (r *Runner) getGsuiteGroupsForUser(username string) (groups []string, err error) {
+	userKey := username
+
+	if r.resolveAliases {
+		userKey, err = r.gsuiteCli.GetUserPrimaryEmail(username)
+		if err != nil {
+			return nil, fmt.Errorf("failed resolving primary email for %s: %v", username, err)
+		}
+	}
+
+	domain, err := domainFromEmail(userKey)
+	if err != nil {
+		return nil, err
+	}
+
+	groups, err = r.gsuiteCli.GetGroupsFromUser(domain, userKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed getting groups for %s in domain %s: %v", userKey, domain, err)
+	}
+
+	return groups, nil
+}
+
 // TODO
 func (r *Runner) reconcileUserGroups() {
 
@@ -191,12 +244,20 @@ func (r *Runner) reconcileUserGroups() {
 	// 3. Reconcile group memberships in Keycloak having Gsuite as source of truth.
 	for kcUsername, kcUserGroups := range kcUsersGroupsMap {
 
+		if r.userDelay > 0 {
+			time.Sleep(r.userDelay)
+		}
+
 		r.appCtx.Logger.Info("reconciling user groups", "user", kcUsername)
 
-		gsuiteGroups, err := r.gsuiteCli.GetGroupsFromUser(r.gsuiteDomain, kcUsername)
+		gsuiteGroups, err := r.getGsuiteGroupsForUser(kcUsername)
 		if err != nil {
 			r.appCtx.Logger.Error("failed getting groups from Gsuite. Ignoring user...", "user", kcUsername, "error", err.Error())
 			continue
+		}
+
+		if len(gsuiteGroups) == 0 {
+			r.appCtx.Logger.Warn("user has no groups in its own domain, possible alias mismatch", "user", kcUsername)
 		}
 
 		// Deletions
