@@ -18,9 +18,11 @@ This synchronizer bridges that gap by continuously monitoring users in Keycloak 
 ## How it works
 
 1. **Discovery**: KEGOS retrieves all users from the specified Keycloak realm
-2. **Group Resolution**: For each user, it queries Google Workspace Admin API to get their group memberships
+2. **Group Resolution**: For each user, it derives the Google Workspace domain from the user's email and queries the Admin API for that user's group memberships in that domain
 3. **Synchronization**: Groups are created in Keycloak if they don't exist, and users are added/removed from groups to match Google Workspace
 4. **Continuous Sync**: The process repeats at configurable intervals to keep memberships up-to-date
+
+The set of users to sync is whatever exists in the Keycloak realm: if a user managed to log into Keycloak, its domain is trusted. Each user only receives groups from its own domain (the part after the `@`). When a user logs in through a domain alias, enable `--resolve-aliases` so KEGOS resolves the Google primary email first and matches the real domain.
 
 ## Flags
 
@@ -28,13 +30,14 @@ Every configuration parameter can be defined by flags that can be passed to the 
 They are described in the following table:
 
 | Name                       | Description                                               | Default | Example                                            |
-|:---------------------------|:----------------------------------------------------------|:--------|----------------------------------------------------|
+| :------------------------- | :-------------------------------------------------------- | :------ | -------------------------------------------------- |
 | `--log-level`              | Define the verbosity of the logs                          | `info`  | `--log-level debug`                                |
 | `--gsuite-credentials`     | Path to Google Workspace service account credentials JSON | -       | `--gsuite-credentials="/path/to/credentials.json"` |
-| `--gsuite-domain`          | Google Workspace domain to sync groups from               | -       | `--gsuite-domain="company.com"`                    |
+| `--resolve-aliases`        | Resolve each Keycloak username to its Google primary email before syncing | `false` | `--resolve-aliases`                                |
+| `--user-rate-limit`        | Max users processed per minute against the Google API (0 disables it)     | `60`    | `--user-rate-limit=120`                            |
 | `--keycloak-uri`           | Keycloak server URI                                       | -       | `--keycloak-uri="https://auth.company.com"`        |
 | `--keycloak-realm`         | Keycloak realm to sync users and groups                   | -       | `--keycloak-realm="master"`                        |
-| `--keycloak-client-id`     | Keycloak client ID with admin permissions                 | -       | `--keycloak-client-id="kegos"`                      |
+| `--keycloak-client-id`     | Keycloak client ID with admin permissions                 | -       | `--keycloak-client-id="kegos"`                     |
 | `--keycloak-client-secret` | Keycloak client secret                                    | -       | `--keycloak-client-secret="super-secret"`          |
 | `--reconcile-interval`     | Time between synchronization cycles (duration format)     | `10m`   | `--reconcile-interval="5m"`                        |
 | `--synced-parent-group`    | Keycloak group where to sync Gsuite groups                | -       | `--synced-parent-group="google-workspace"`         |
@@ -44,18 +47,63 @@ They are described in the following table:
 
 ### Google Workspace Setup
 
-1. Create a service account in Google Cloud Console
-2. Enable the Admin SDK API
-3. Download the service account JSON credentials
-4. Grant domain-wide delegation to the service account
-5. In Google Admin Console, authorize the service account with the following OAuth scopes:
-- `https://www.googleapis.com/auth/admin.directory.group.readonly`
-- `https://www.googleapis.com/auth/admin.directory.user.readonly`
+KEGOS talks to the Admin SDK Directory API using a Delegated Admin Service Account (DASA):
+a regular GCP service account that is granted a Workspace delegated admin role directly.
+
+Ref: https://github.com/GAM-team/GAM/wiki/Using-GAM7-with-a-delegated-admin-service-account
+Ref: https://knowledge.workspace.google.com/admin/users/assign-specific-admin-roles
+
+#### 1. Google Cloud (gcloud)
+
+```bash
+PROJECT_ID="your-project"
+
+# Enable the Admin SDK API in the service account's project
+gcloud services enable admin.googleapis.com --project="$PROJECT_ID"
+
+# Create the service account
+gcloud iam service-accounts create kegos \
+  --display-name="kegos directory reader" \
+  --project="$PROJECT_ID"
+
+SA_EMAIL="kegos@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# Create the key that KEGOS reads via --gsuite-credentials
+gcloud iam service-accounts keys create gsuite-credentials.json \
+  --iam-account="$SA_EMAIL"
+
+# Print the email and numeric unique ID (needed in the Admin console)
+gcloud iam service-accounts describe "$SA_EMAIL" \
+  --format="value(email, uniqueId)"
+```
+
+No project-level IAM roles are needed to read the directory: read access is granted in
+Workspace, not in Cloud IAM.
+
+#### 2. Google Workspace Admin console
+
+You need to be a super admin. Menus live at https://admin.google.com.
+
+1. Create a delegated admin role with read-only access:
+   `Account` > `Admin roles` > `Create new role`. Under Admin API privileges grant only:
+   - `Users` > `Read`
+   - `Groups` > `Read`
+
+2. Assign the service account to that role:
+   open the role > `Assign service accounts` > enter the service account email from step 1.
+
+3. The scopes (`admin.directory.user.readonly`, `admin.directory.group.readonly`) are
+   requested by KEGOS itself; nothing to configure for them in the console.
+
+Role assignments can take a few minutes to propagate.
+
+Ref: https://support.google.com/a/answer/33325
 
 ### Keycloak Setup
 
 1. Create a client in Keycloak with service account enabled
 2. Assign the following client roles from `realm-management`:
+
 - `manage-users` (to manage user group memberships)
 - `view-users` (to read user information)
 - `manage-realm` (to create and manage groups)
@@ -70,7 +118,8 @@ Here you have a complete example to use this command with flags:
 kegos \
  --log-level=info \
  --gsuite-credentials="/opt/kegos/gsuite-credentials.json" \
- --gsuite-domain="freepik.com" \
+ --resolve-aliases \
+ --user-rate-limit=120 \
  --keycloak-uri="https://keycloak.freepik.com" \
  --keycloak-realm="employees" \
  --keycloak-client-id="kegos-sync" \
@@ -85,7 +134,6 @@ You can also mix both approaches, with environment variables:
 
 ```console
 export GSUITE_CREDENTIALS="/opt/kegos/gsuite-credentials.json"
-export GSUITE_DOMAIN="freepik.com"
 export KEYCLOAK_URI="https://keycloak.freepik.com"
 export KEYCLOAK_REALM="employees"
 export KEYCLOAK_CLIENT_ID="kegos-sync"
@@ -113,7 +161,7 @@ docker run --rm \
  -v /path/to/gsuite-creds.json:/credentials.json:ro \
  ghcr.io/achetronic/kegos:latest \
  --gsuite-credentials="/credentials.json" \
- --gsuite-domain="your-domain.com" \
+ --resolve-aliases \
  --keycloak-uri="https://your-keycloak.com" \
  --keycloak-realm="your-realm" \
  --keycloak-client-id="your-client" \
@@ -151,7 +199,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-   http://www.apache.org/licenses/LICENSE-2.0
+http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -164,4 +212,3 @@ limitations under the License.
 This project was done using IDEs from JetBrains. They helped us to develop faster, so we recommend them a lot! 🤓
 
 <img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.png" alt="JetBrains Logo (Main) logo." width="150">
-

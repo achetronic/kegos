@@ -17,7 +17,8 @@ import (
 
 var (
 	flagGsuiteCredentials    = flag.String("gsuite-credentials", "", "Path to GSuite JSON credentials file (required)")
-	flagGsuiteDomain         = flag.String("gsuite-domain", "", "GSuite domain (required)")
+	flagResolveAliases       = flag.Bool("resolve-aliases", false, "Resolve each Keycloak username to its Google primary email before syncing groups")
+	flagUserRateLimit        = flag.Int("user-rate-limit", 60, "Max users processed per minute against the Google API (0 disables throttling)")
 	flagKeycloakRealm        = flag.String("keycloak-realm", "", "Keycloak realm (required)")
 	flagKeycloakURI          = flag.String("keycloak-uri", "", "Keycloak URI (required)")
 	flagKeycloakClientID     = flag.String("keycloak-client-id", "", "Keycloak client ID (required)")
@@ -46,7 +47,6 @@ func main() {
 		flag.PrintDefaults()
 		fmt.Printf("\nEnvironment Variables (override flags):\n")
 		fmt.Printf("  GSUITE_CREDENTIALS     - Path to GSuite JSON credentials file\n")
-		fmt.Printf("  GSUITE_DOMAIN          - GSuite domain\n")
 		fmt.Printf("  KEYCLOAK_REALM         - Keycloak realm\n")
 		fmt.Printf("  KEYCLOAK_URI           - Keycloak URI\n")
 		fmt.Printf("  KEYCLOAK_CLIENT_ID     - Keycloak client ID\n")
@@ -59,7 +59,6 @@ func main() {
 
 	// Get final values from flags or environment variables
 	gsuiteCredentials := getValueFromFlagOrEnv(flagGsuiteCredentials, "GSUITE_CREDENTIALS")
-	gsuiteDomain := getValueFromFlagOrEnv(flagGsuiteDomain, "GSUITE_DOMAIN")
 	keycloakRealm := getValueFromFlagOrEnv(flagKeycloakRealm, "KEYCLOAK_REALM")
 	keycloakURI := getValueFromFlagOrEnv(flagKeycloakURI, "KEYCLOAK_URI")
 	keycloakClientID := getValueFromFlagOrEnv(flagKeycloakClientID, "KEYCLOAK_CLIENT_ID")
@@ -72,9 +71,6 @@ func main() {
 
 	if gsuiteCredentials == "" {
 		errors = append(errors, "--gsuite-credentials is required")
-	}
-	if gsuiteDomain == "" {
-		errors = append(errors, "--gsuite-domain is required")
 	}
 	if keycloakRealm == "" {
 		errors = append(errors, "--keycloak-realm is required")
@@ -130,7 +126,8 @@ func main() {
 	leRunner, err := runner.NewRunner(runner.RunnerOptions{
 		AppCtx:                    appCtx,
 		GsuiteJsonCredentialsPath: gsuiteCredentials,
-		GsuiteDomain:              gsuiteDomain,
+		ResolveAliases:            *flagResolveAliases,
+		UserRateLimit:             *flagUserRateLimit,
 		KeycloakRealm:             keycloakRealm,
 		KeycloakURI:               keycloakURI,
 		KeycloakClientID:          keycloakClientID,
