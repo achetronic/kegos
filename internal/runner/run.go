@@ -20,14 +20,13 @@ import (
 // gsuiteClient is the subset of the Gsuite admin API the runner depends on.
 type gsuiteClient interface {
 	GetGroupsFromUser(domain string, user string) (groups []string, err error)
-	GetUserPrimaryEmail(userKey string) (primaryEmail string, err error)
 }
 
 type RunnerOptions struct {
 	AppCtx *globals.ApplicationContext
 
 	GsuiteJsonCredentialsPath string
-	ResolveAliases            bool
+	GsuiteDomains             []string
 	UserRateLimit             int
 
 	KeycloakURI          string
@@ -44,7 +43,7 @@ type Runner struct {
 
 	//
 	gsuiteJsonCredentialsPath string
-	resolveAliases            bool
+	gsuiteDomains             []string
 	userDelay                 time.Duration
 
 	//
@@ -61,7 +60,7 @@ func NewRunner(opts RunnerOptions) (*Runner, error) {
 	runner := &Runner{
 		appCtx:                    opts.AppCtx,
 		gsuiteJsonCredentialsPath: opts.GsuiteJsonCredentialsPath,
-		resolveAliases:            opts.ResolveAliases,
+		gsuiteDomains:             opts.GsuiteDomains,
 		userDelay:                 userDelayFromRate(opts.UserRateLimit),
 
 		reconcileLoopDuration: opts.ReconcileLoopDuration,
@@ -189,36 +188,27 @@ func userDelayFromRate(usersPerMinute int) time.Duration {
 	return time.Minute / time.Duration(usersPerMinute)
 }
 
-// domainFromEmail extracts the domain part of an email address.
-func domainFromEmail(email string) (string, error) {
-	at := strings.LastIndex(email, "@")
-	if at <= 0 || at == len(email)-1 {
-		return "", fmt.Errorf("invalid email address: %q", email)
-	}
-	return email[at+1:], nil
-}
-
-// getGsuiteGroupsForUser returns the user's Gsuite groups filtered to the user's own domain.
-// When resolveAliases is set, the Keycloak username is resolved to its Google primary email
-// first, so a user logged in through a domain alias still matches its real domain.
+// getGsuiteGroupsForUser returns the union of the user's Gsuite groups across every configured
+// domain, deduplicated. A user's login email is passed as userKey directly; Google accepts either
+// the primary email or an alias, so no alias resolution is needed. The domain filter selects the
+// domain where the groups themselves live, which is an account-level setting rather than a per-user
+// property (e.g. groups may live under one domain while users log in through another).
 func (r *Runner) getGsuiteGroupsForUser(username string) (groups []string, err error) {
-	userKey := username
+	seen := map[string]struct{}{}
 
-	if r.resolveAliases {
-		userKey, err = r.gsuiteCli.GetUserPrimaryEmail(username)
+	for _, domain := range r.gsuiteDomains {
+		domainGroups, err := r.gsuiteCli.GetGroupsFromUser(domain, username)
 		if err != nil {
-			return nil, fmt.Errorf("failed resolving primary email for %s: %v", username, err)
+			return nil, fmt.Errorf("failed getting groups for %s in domain %s: %v", username, domain, err)
 		}
-	}
 
-	domain, err := domainFromEmail(userKey)
-	if err != nil {
-		return nil, err
-	}
-
-	groups, err = r.gsuiteCli.GetGroupsFromUser(domain, userKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed getting groups for %s in domain %s: %v", userKey, domain, err)
+		for _, group := range domainGroups {
+			if _, found := seen[group]; found {
+				continue
+			}
+			seen[group] = struct{}{}
+			groups = append(groups, group)
+		}
 	}
 
 	return groups, nil
@@ -257,7 +247,7 @@ func (r *Runner) reconcileUserGroups() {
 		}
 
 		if len(gsuiteGroups) == 0 {
-			r.appCtx.Logger.Warn("user has no groups in its own domain, possible alias mismatch", "user", kcUsername)
+			r.appCtx.Logger.Debug("user has no groups in any configured domain", "user", kcUsername)
 		}
 
 		// Deletions
