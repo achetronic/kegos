@@ -10,119 +10,90 @@ import (
 	"time"
 )
 
-// fakeGsuiteClient records the domain and user key it was queried with and returns canned data.
+// fakeGsuiteClient returns canned groups or an error per domain.
 type fakeGsuiteClient struct {
 	groupsByDomain map[string][]string
-	primaryEmail   string
-	primaryErr     error
-
-	gotDomain  string
-	gotUserKey string
+	errByDomain    map[string]error
 }
 
-func (f *fakeGsuiteClient) GetGroupsFromUser(domain string, user string) ([]string, error) {
-	f.gotDomain = domain
-	f.gotUserKey = user
+func (f *fakeGsuiteClient) GetGroupsFromUser(domain string, _ string) ([]string, error) {
+	if err := f.errByDomain[domain]; err != nil {
+		return nil, err
+	}
 	return f.groupsByDomain[domain], nil
 }
 
-func (f *fakeGsuiteClient) GetUserPrimaryEmail(userKey string) (string, error) {
-	if f.primaryErr != nil {
-		return "", f.primaryErr
-	}
-	return f.primaryEmail, nil
-}
-
-// domainFromEmail must extract the domain and reject malformed addresses.
-func TestDomainFromEmail(t *testing.T) {
+// getGsuiteGroupsForUser must union the user's groups across every configured domain and deduplicate them.
+func TestGetGsuiteGroupsForUserUnionsAndDeduplicates(t *testing.T) {
 	tests := map[string]struct {
-		email     string
-		want      string
-		wantError bool
+		domains        []string
+		groupsByDomain map[string][]string
+		want           []string
 	}{
-		"plain address":        {email: "ahernandez@freepik.com", want: "freepik.com"},
-		"subdomain":            {email: "user@sales.freepik.com", want: "sales.freepik.com"},
-		"no at sign":           {email: "notanemail", wantError: true},
-		"empty local part":     {email: "@freepik.com", wantError: true},
-		"empty domain part":    {email: "user@", wantError: true},
-		"empty string":         {email: "", wantError: true},
+		"single domain returns its groups": {
+			domains:        []string{"example.com"},
+			groupsByDomain: map[string][]string{"example.com": {"dev@example.com", "all@example.com"}},
+			want:           []string{"dev@example.com", "all@example.com"},
+		},
+		"groups from every domain are merged": {
+			domains: []string{"example.com", "example.org"},
+			groupsByDomain: map[string][]string{
+				"example.com": {"dev@example.com"},
+				"example.org": {"ops@example.org"},
+			},
+			want: []string{"dev@example.com", "ops@example.org"},
+		},
+		"a group shared across domains appears once": {
+			domains: []string{"example.com", "example.org"},
+			groupsByDomain: map[string][]string{
+				"example.com": {"shared@corp.example", "dev@example.com"},
+				"example.org": {"shared@corp.example"},
+			},
+			want: []string{"shared@corp.example", "dev@example.com"},
+		},
+		"user with no groups anywhere yields nothing": {
+			domains:        []string{"example.com", "example.org"},
+			groupsByDomain: map[string][]string{},
+			want:           nil,
+		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, err := domainFromEmail(tc.email)
-			if tc.wantError {
-				if err == nil {
-					t.Fatalf("expected error for %q, got %q", tc.email, got)
-				}
-				return
+			r := &Runner{
+				gsuiteDomains: tc.domains,
+				gsuiteCli:     &fakeGsuiteClient{groupsByDomain: tc.groupsByDomain},
 			}
+
+			got, err := r.getGsuiteGroupsForUser("user@corp.com")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if got != tc.want {
-				t.Fatalf("got %q, want %q", got, tc.want)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-// Without alias resolution the domain is derived from the Keycloak username itself.
-func TestGetGsuiteGroupsForUserDerivesDomainFromUsername(t *testing.T) {
-	fake := &fakeGsuiteClient{
-		groupsByDomain: map[string][]string{"freepik.com": {"dev@freepik.com", "all@freepik.com"}},
+// A failure on any domain must abort the union so a transient error never yields a partial
+// list that would trigger spurious group removals during reconcile.
+func TestGetGsuiteGroupsForUserPropagatesDomainError(t *testing.T) {
+	boom := errors.New("api unavailable")
+	r := &Runner{
+		gsuiteDomains: []string{"example.com", "example.org"},
+		gsuiteCli: &fakeGsuiteClient{
+			groupsByDomain: map[string][]string{"example.com": {"dev@example.com"}},
+			errByDomain:    map[string]error{"example.org": boom},
+		},
 	}
-	r := &Runner{resolveAliases: false, gsuiteCli: fake}
 
-	got, err := r.getGsuiteGroupsForUser("ahernandez@freepik.com")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	got, err := r.getGsuiteGroupsForUser("user@corp.com")
+	if err == nil {
+		t.Fatalf("expected error when a domain fails, got groups %v", got)
 	}
-	if want := []string{"dev@freepik.com", "all@freepik.com"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-	if fake.gotDomain != "freepik.com" {
-		t.Fatalf("queried domain %q, want freepik.com", fake.gotDomain)
-	}
-	if fake.gotUserKey != "ahernandez@freepik.com" {
-		t.Fatalf("queried userKey %q, want the raw username", fake.gotUserKey)
-	}
-}
-
-// With alias resolution enabled the primary email drives both the domain and the userKey,
-// so a user logged in through an alias domain matches its real domain.
-func TestGetGsuiteGroupsForUserResolvesAlias(t *testing.T) {
-	fake := &fakeGsuiteClient{
-		primaryEmail:   "ahernandez@freepik.com",
-		groupsByDomain: map[string][]string{"freepik.com": {"dev@freepik.com"}},
-	}
-	r := &Runner{resolveAliases: true, gsuiteCli: fake}
-
-	got, err := r.getGsuiteGroupsForUser("ahernandez@magnific.com")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if want := []string{"dev@freepik.com"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-	if fake.gotDomain != "freepik.com" {
-		t.Fatalf("queried domain %q, want the resolved domain freepik.com", fake.gotDomain)
-	}
-	if fake.gotUserKey != "ahernandez@freepik.com" {
-		t.Fatalf("queried userKey %q, want the resolved primary email", fake.gotUserKey)
-	}
-}
-
-// A failure resolving the primary email must abort the user without querying groups.
-func TestGetGsuiteGroupsForUserPropagatesResolveError(t *testing.T) {
-	fake := &fakeGsuiteClient{primaryErr: errors.New("user not found")}
-	r := &Runner{resolveAliases: true, gsuiteCli: fake}
-
-	if _, err := r.getGsuiteGroupsForUser("ghost@magnific.com"); err == nil {
-		t.Fatal("expected error when primary email resolution fails")
-	}
-	if fake.gotDomain != "" {
-		t.Fatalf("groups should not be queried on resolve failure, got domain %q", fake.gotDomain)
+	if got != nil {
+		t.Fatalf("expected no groups on error, got %v", got)
 	}
 }
 
