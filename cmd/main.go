@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	//
@@ -37,6 +38,41 @@ func getValueFromFlagOrEnv(flagValue *string, envVar string) string {
 	return os.Getenv(envVar)
 }
 
+// flagWasSet reports whether the named flag was explicitly provided on the command line.
+func flagWasSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// resolveBool applies flag-over-env precedence for a bool: an explicit flag wins, otherwise a
+// parseable env var, otherwise the flag default.
+func resolveBool(flagSet bool, flagValue bool, envRaw string) bool {
+	if flagSet {
+		return flagValue
+	}
+	if parsed, err := strconv.ParseBool(envRaw); err == nil {
+		return parsed
+	}
+	return flagValue
+}
+
+// resolveInt applies flag-over-env precedence for an int: an explicit flag wins, otherwise a
+// parseable env var, otherwise the flag default.
+func resolveInt(flagSet bool, flagValue int, envRaw string) int {
+	if flagSet {
+		return flagValue
+	}
+	if parsed, err := strconv.Atoi(envRaw); err == nil {
+		return parsed
+	}
+	return flagValue
+}
+
 func main() {
 
 	flag.Parse()
@@ -53,6 +89,8 @@ func main() {
 		fmt.Printf("  KEYCLOAK_CLIENT_SECRET - Keycloak client secret\n")
 		fmt.Printf("  LOG_LEVEL              - Log level (debug, info, warn, error)\n")
 		fmt.Printf("  SYNCED_PARENT_GROUP    - Keycloak group where to sync Gsuite groups\n")
+		fmt.Printf("  RESOLVE_ALIASES        - Resolve usernames to their Google primary email (true/false)\n")
+		fmt.Printf("  USER_RATE_LIMIT        - Max users processed per minute against the Google API\n")
 
 		os.Exit(0)
 	}
@@ -65,6 +103,8 @@ func main() {
 	keycloakClientSecret := getValueFromFlagOrEnv(flagKeycloakClientSecret, "KEYCLOAK_CLIENT_SECRET")
 	logLevel := getValueFromFlagOrEnv(flagLogLevel, "LOG_LEVEL")
 	syncedParentGroup := getValueFromFlagOrEnv(flagSyncedParentGroup, "SYNCED_PARENT_GROUP")
+	resolveAliases := resolveBool(flagWasSet("resolve-aliases"), *flagResolveAliases, os.Getenv("RESOLVE_ALIASES"))
+	userRateLimit := resolveInt(flagWasSet("user-rate-limit"), *flagUserRateLimit, os.Getenv("USER_RATE_LIMIT"))
 
 	// Validate flags compliance
 	var errors []string
@@ -126,8 +166,8 @@ func main() {
 	leRunner, err := runner.NewRunner(runner.RunnerOptions{
 		AppCtx:                    appCtx,
 		GsuiteJsonCredentialsPath: gsuiteCredentials,
-		ResolveAliases:            *flagResolveAliases,
-		UserRateLimit:             *flagUserRateLimit,
+		ResolveAliases:            resolveAliases,
+		UserRateLimit:             userRateLimit,
 		KeycloakRealm:             keycloakRealm,
 		KeycloakURI:               keycloakURI,
 		KeycloakClientID:          keycloakClientID,
