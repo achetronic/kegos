@@ -31,28 +31,28 @@ func TestGetGsuiteGroupsForUserUnionsAndDeduplicates(t *testing.T) {
 		want           []string
 	}{
 		"single domain returns its groups": {
-			domains:        []string{"freepik.com"},
-			groupsByDomain: map[string][]string{"freepik.com": {"dev@freepik.com", "all@freepik.com"}},
-			want:           []string{"dev@freepik.com", "all@freepik.com"},
+			domains:        []string{"example.com"},
+			groupsByDomain: map[string][]string{"example.com": {"dev@example.com", "all@example.com"}},
+			want:           []string{"dev@example.com", "all@example.com"},
 		},
 		"groups from every domain are merged": {
-			domains: []string{"freepik.com", "magnific.com"},
+			domains: []string{"example.com", "example.org"},
 			groupsByDomain: map[string][]string{
-				"freepik.com":  {"dev@freepik.com"},
-				"magnific.com": {"ops@magnific.com"},
+				"example.com": {"dev@example.com"},
+				"example.org": {"ops@example.org"},
 			},
-			want: []string{"dev@freepik.com", "ops@magnific.com"},
+			want: []string{"dev@example.com", "ops@example.org"},
 		},
 		"a group shared across domains appears once": {
-			domains: []string{"freepik.com", "magnific.com"},
+			domains: []string{"example.com", "example.org"},
 			groupsByDomain: map[string][]string{
-				"freepik.com":  {"shared@corp.com", "dev@freepik.com"},
-				"magnific.com": {"shared@corp.com"},
+				"example.com": {"shared@corp.example", "dev@example.com"},
+				"example.org": {"shared@corp.example"},
 			},
-			want: []string{"shared@corp.com", "dev@freepik.com"},
+			want: []string{"shared@corp.example", "dev@example.com"},
 		},
 		"user with no groups anywhere yields nothing": {
-			domains:        []string{"freepik.com", "magnific.com"},
+			domains:        []string{"example.com", "example.org"},
 			groupsByDomain: map[string][]string{},
 			want:           nil,
 		},
@@ -81,10 +81,10 @@ func TestGetGsuiteGroupsForUserUnionsAndDeduplicates(t *testing.T) {
 func TestGetGsuiteGroupsForUserPropagatesDomainError(t *testing.T) {
 	boom := errors.New("api unavailable")
 	r := &Runner{
-		gsuiteDomains: []string{"freepik.com", "magnific.com"},
+		gsuiteDomains: []string{"example.com", "example.org"},
 		gsuiteCli: &fakeGsuiteClient{
-			groupsByDomain: map[string][]string{"freepik.com": {"dev@freepik.com"}},
-			errByDomain:    map[string]error{"magnific.com": boom},
+			groupsByDomain: map[string][]string{"example.com": {"dev@example.com"}},
+			errByDomain:    map[string]error{"example.org": boom},
 		},
 	}
 

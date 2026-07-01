@@ -22,7 +22,7 @@ This synchronizer bridges that gap by continuously monitoring users in Keycloak 
 3. **Synchronization**: Groups are created in Keycloak if they don't exist, and users are added/removed from groups to match Google Workspace
 4. **Continuous Sync**: The process repeats at configurable intervals to keep memberships up-to-date
 
-The set of users to sync is whatever exists in the Keycloak realm: if a user managed to log into Keycloak, its email is trusted and used as-is (Google accepts either the primary email or an alias). `--gsuite-domains` lists the domains where the groups themselves live, which is an account-level setting, not a per-user one. Groups may live under one domain while users log in through another, so list every domain that can hold groups (e.g. `freepik.com,magnific.com`) and KEGOS returns the union for each user.
+The set of users to sync is whatever exists in the Keycloak realm: if a user managed to log into Keycloak, its email is trusted and used as-is (Google accepts either the primary email or an alias). `--gsuite-domains` lists the domains where the groups themselves live, which is an account-level setting, not a per-user one. Groups may live under one domain while users log in through another, so list every domain that can hold groups (e.g. `example.com,example.org`) and KEGOS returns the union for each user.
 
 ## Flags
 
@@ -33,7 +33,7 @@ They are described in the following table:
 | :------------------------- | :------------------------------------------------------------------------ | :------ | -------------------------------------------------- |
 | `--log-level`              | Define the verbosity of the logs                                          | `info`  | `--log-level debug`                                |
 | `--gsuite-credentials`     | Path to Google Workspace service account credentials JSON                 | -       | `--gsuite-credentials="/path/to/credentials.json"` |
-| `--gsuite-domains`         | Comma-separated list of Google Workspace domains where groups live        | -       | `--gsuite-domains="freepik.com,magnific.com"`      |
+| `--gsuite-domains`         | Comma-separated list of Google Workspace domains where groups live        | -       | `--gsuite-domains="example.com,example.org"`       |
 | `--user-rate-limit`        | Max users processed per minute against the Google API (0 disables it)     | `60`    | `--user-rate-limit=120`                            |
 | `--keycloak-uri`           | Keycloak server URI                                                       | -       | `--keycloak-uri="https://auth.company.com"`        |
 | `--keycloak-realm`         | Keycloak realm to sync users and groups                                   | -       | `--keycloak-realm="master"`                        |
@@ -118,11 +118,11 @@ Here you have a complete example to use this command with flags:
 kegos \
  --log-level=info \
  --gsuite-credentials="/opt/kegos/gsuite-credentials.json" \
- --gsuite-domains="freepik.com,magnific.com" \
+ --gsuite-domains="example.com,example.org" \
  --user-rate-limit=120 \
- --keycloak-uri="https://keycloak.freepik.com" \
- --keycloak-realm="employees" \
- --keycloak-client-id="kegos-sync" \
+ --keycloak-uri="https://keycloak.example.com" \
+ --keycloak-realm="your-realm" \
+ --keycloak-client-id="your-client" \
  --keycloak-client-secret="your-client-secret" \
  --reconcile-interval="15m" \
  --synced-parent-group="google-workspace"
@@ -134,10 +134,10 @@ You can also mix both approaches, with environment variables:
 
 ```console
 export GSUITE_CREDENTIALS="/opt/kegos/gsuite-credentials.json"
-export GSUITE_DOMAINS="freepik.com,magnific.com"
-export KEYCLOAK_URI="https://keycloak.freepik.com"
-export KEYCLOAK_REALM="employees"
-export KEYCLOAK_CLIENT_ID="kegos-sync"
+export GSUITE_DOMAINS="example.com,example.org"
+export KEYCLOAK_URI="https://keycloak.example.com"
+export KEYCLOAK_REALM="your-realm"
+export KEYCLOAK_CLIENT_ID="your-client"
 export KEYCLOAK_CLIENT_SECRET="your-client-secret"
 export SYNCED_PARENT_GROUP="google-workspace"
 
@@ -162,7 +162,7 @@ docker run --rm \
  -v /path/to/gsuite-creds.json:/credentials.json:ro \
  ghcr.io/achetronic/kegos:latest \
  --gsuite-credentials="/credentials.json" \
- --gsuite-domains="freepik.com,magnific.com" \
+ --gsuite-domains="example.com,example.org" \
  --keycloak-uri="https://your-keycloak.com" \
  --keycloak-realm="your-realm" \
  --keycloak-client-id="your-client" \
